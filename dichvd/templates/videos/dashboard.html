@@ -1,0 +1,50 @@
+{% extends "videos/base.html" %}
+
+{% block title %}Dự án của tôi · Vietsub Studio{% endblock %}
+
+{% block content %}
+<section class="page-head">
+    <div>
+        <div class="eyebrow">Không gian làm việc</div>
+        <h1>Dự án của bạn</h1>
+        <p>Theo dõi tiến độ dịch, lồng tiếng và chỉnh sửa phụ đề tại một nơi.</p>
+    </div>
+    <a class="btn" href="{% url 'videos:upload' %}">＋ Tải video lên</a>
+</section>
+
+{% if jobs %}
+    <section class="card table-wrap" aria-label="Danh sách dự án">
+        <table class="jobs-table">
+            <thead>
+                <tr><th>Dự án</th><th>Trạng thái</th><th>Tiến độ</th><th>Cập nhật</th><th></th></tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                    <tr>
+                        <td>
+                            <a class="job-title" href="{% url 'videos:detail' job_id=job.id %}">{{ job.title|default:"Video chưa đặt tên" }}</a>
+                            <div class="muted small">{{ job.source_language }} → {{ job.target_language }}</div>
+                        </td>
+                        <td><span class="badge" data-status="{{ job.status }}">{{ job.get_status_display }}</span></td>
+                        <td>
+                            <div style="min-width:110px">
+                                <div class="progress"><span style="width:{{ job.progress }}%"></span></div>
+                                <div class="muted small" style="margin-top:5px">{{ job.progress }}%</div>
+                            </div>
+                        </td>
+                        <td class="muted small">{{ job.updated_at|date:"d/m/Y H:i" }}</td>
+                        <td><a href="{% url 'videos:detail' job_id=job.id %}">Mở →</a></td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+{% else %}
+    <section class="card empty">
+        <div class="empty-icon" aria-hidden="true">✦</div>
+        <h2>Bắt đầu với video đầu tiên</h2>
+        <p>Tải video lên để tạo phụ đề, dịch và biên tập trong cùng một quy trình.</p>
+        <a class="btn" href="{% url 'videos:upload' %}">Tạo dự án mới</a>
+    </section>
+{% endif %}
+{% endblock %}

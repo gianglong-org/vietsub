@@ -1,0 +1,93 @@
+{% extends "videos/base.html" %}
+
+{% block title %}Tải video lên · Vietsub Studio{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow">Dự án mới</div>
+        <h1>Tải video lên</h1>
+        <p>Chọn video và ngôn ngữ. Bạn có thể theo dõi tiến độ xử lý ngay sau khi gửi.</p>
+    </div>
+    <a class="btn btn-secondary" href="{% url 'videos:dashboard' %}">← Danh sách dự án</a>
+</div>
+
+<div class="two-col">
+    <section class="card card-pad">
+        <form id="upload-form" method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            {{ form.target_language }}
+            {% if form.non_field_errors %}<div class="alert alert-error">{{ form.non_field_errors }}</div>{% endif %}
+            <div class="field">
+                <label for="{{ form.title.id_for_label }}">Tên dự án <span class="muted">(không bắt buộc)</span></label>
+                {{ form.title }}
+                {{ form.title.errors }}
+            </div>
+            <div class="field">
+                <label for="{{ form.source_language.id_for_label }}">Ngôn ngữ gốc</label>
+                {{ form.source_language }}
+                {{ form.source_language.errors }}
+            </div>
+            <div class="field">
+                <label for="{{ form.original_file.id_for_label }}">Tệp video</label>
+                <div class="upload-drop">
+                    {{ form.original_file }}
+                    <p class="help">Hỗ trợ tệp video. Vui lòng chọn tệp từ thiết bị của bạn.</p>
+                    {{ form.original_file.errors }}
+                    <video id="video-preview" class="preview" controls hidden></video>
+                    <div id="file-name" class="small muted" aria-live="polite"></div>
+                </div>
+            </div>
+            <button id="submit-upload" class="btn" type="submit">
+                <span id="upload-spinner" class="spinner" hidden></span>
+                <span id="upload-label">Tạo dự án và bắt đầu</span>
+            </button>
+        </form>
+    </section>
+
+    <aside class="card card-pad">
+        <div class="eyebrow">Quy trình</div>
+        <h2 style="margin-top:8px">Từ video đến bản dịch</h2>
+        <div class="stack small">
+            <div><strong>01 · Nhận diện lời thoại</strong><div class="muted">Tạo phụ đề theo mốc thời gian.</div></div>
+            <div><strong>02 · Dịch và kiểm định</strong><div class="muted">Giữ ngữ cảnh và thuật ngữ nhất quán.</div></div>
+            <div><strong>03 · Biên tập</strong><div class="muted">Chỉnh sửa từng câu trước khi hoàn tất.</div></div>
+        </div>
+        <p class="small">Bạn có thể quay lại dự án bất cứ lúc nào từ danh sách dự án.</p>
+    </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+    const input = document.getElementById("id_original_file");
+    const preview = document.getElementById("video-preview");
+    const fileName = document.getElementById("file-name");
+    const form = document.getElementById("upload-form");
+    const submit = document.getElementById("submit-upload");
+    const spinner = document.getElementById("upload-spinner");
+    const label = document.getElementById("upload-label");
+    let previewUrl;
+
+    input.addEventListener("change", () => {
+        const file = input.files[0];
+        fileName.textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB` : "";
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        preview.hidden = !file || !file.type.startsWith("video/");
+        if (!preview.hidden) {
+            previewUrl = URL.createObjectURL(file);
+            preview.src = previewUrl;
+        } else {
+            preview.removeAttribute("src");
+        }
+    });
+
+    form.addEventListener("submit", () => {
+        submit.disabled = true;
+        spinner.hidden = false;
+        label.textContent = "Đang tải video lên…";
+    });
+})();
+</script>
+{% endblock %}

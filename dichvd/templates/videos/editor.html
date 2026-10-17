@@ -1,0 +1,87 @@
+{% extends "videos/base.html" %}
+
+{% block title %}Biên tập phụ đề · {{ job.title|default:"Vietsub Studio" }}{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow"><a href="{% url 'videos:detail' job_id=job.id %}">{{ job.title|default:"Dự án" }}</a> / Biên tập</div>
+        <h1>Biên tập phụ đề</h1>
+        <p>Chỉnh nội dung bản dịch. Mỗi câu được lưu riêng để bạn không mất tiến độ.</p>
+    </div>
+    <a class="btn btn-secondary" href="{% url 'videos:detail' job_id=job.id %}">← Chi tiết dự án</a>
+</div>
+
+<section class="card">
+    <div class="card-pad" style="border-bottom:1px solid var(--line)">
+        <div class="editor-actions">
+            <div><strong>{{ segments|length }} đoạn phụ đề</strong><div class="muted small">Ngôn ngữ đích: {{ job.target_language }}</div></div>
+            <span id="save-summary" class="muted small" aria-live="polite">Các chỉnh sửa được lưu khi bạn bấm lưu.</span>
+        </div>
+    </div>
+    {% for segment in segments %}
+        <article class="segment">
+            <div class="segment-top">
+                <span class="segment-number">#{{ segment.index|add:1 }}{% if segment.speaker_name %} · {{ segment.speaker_name }}{% endif %}</span>
+                <span class="muted small">{{ segment.start_sec|floatformat:1 }}s – {{ segment.end_sec|floatformat:1 }}s</span>
+            </div>
+            <div class="original">{{ segment.original_text }}</div>
+            <form class="segment-form" method="post" action="{% url 'videos:update_segment' job_id=job.id segment_id=segment.id %}">
+                {% csrf_token %}
+                <label class="small" for="translated-{{ segment.id }}">Bản dịch</label>
+                <textarea id="translated-{{ segment.id }}" name="translated_text" class="text-input" rows="2" required>{{ segment.translated_text }}</textarea>
+                <div class="editor-actions" style="margin-top:10px">
+                    <span class="segment-save" aria-live="polite">{% if segment.is_reviewed %}Đã lưu{% else %}Chưa chỉnh sửa{% endif %}</span>
+                    <button class="btn btn-small" type="submit">Lưu câu này</button>
+                </div>
+            </form>
+        </article>
+    {% empty %}
+        <div class="empty">
+            <div class="empty-icon" aria-hidden="true">⌁</div>
+            <h2>Chưa có phụ đề để biên tập</h2>
+            <p>Khi dự án hoàn tất xử lý, các đoạn phụ đề sẽ hiển thị tại đây.</p>
+        </div>
+    {% endfor %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+    const forms = document.querySelectorAll(".segment-form");
+    const summary = document.getElementById("save-summary");
+    forms.forEach(form => {
+        form.addEventListener("submit", async event => {
+            event.preventDefault();
+            const button = form.querySelector("button");
+            const state = form.querySelector(".segment-save");
+            const previousLabel = button.textContent;
+            button.disabled = true;
+            button.textContent = "Đang lưu…";
+            state.textContent = "Đang lưu";
+            try {
+                const response = await fetch(form.action, {
+                    method: "POST",
+                    headers: {
+                        "X-CSRFToken": form.querySelector("[name=csrfmiddlewaretoken]").value,
+                        "X-Requested-With": "XMLHttpRequest"
+                    },
+                    body: new FormData(form)
+                });
+                const data = await response.json();
+                if (!response.ok || !data.ok) throw new Error(data.error || "Không lưu được câu này.");
+                state.textContent = "Đã lưu";
+                summary.textContent = "Đã lưu thành công.";
+            } catch (err) {
+                state.textContent = err.message;
+                summary.textContent = "Có lỗi khi lưu. Vui lòng thử lại.";
+            } finally {
+                button.disabled = false;
+                button.textContent = previousLabel;
+            }
+        });
+    });
+})();
+</script>
+{% endblock %}

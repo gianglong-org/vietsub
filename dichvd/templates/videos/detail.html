@@ -1,0 +1,164 @@
+{% extends "videos/base.html" %}
+
+{% block title %}{{ job.title|default:"Chi tiết dự án" }} · Vietsub Studio{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <div>
+        <div class="eyebrow"><a href="{% url 'videos:dashboard' %}">Dự án</a> / Chi tiết</div>
+        <h1>{{ job.title|default:"Video chưa đặt tên" }}</h1>
+        <p>{{ job.created_at|date:"d/m/Y H:i" }} · {{ job.source_language }} → {{ job.target_language }}</p>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+        {% if job.status == "done" %}
+            <a class="btn" href="{% url 'videos:editor' job_id=job.id %}">Mở trình biên tập</a>
+        {% endif %}
+        <a class="btn btn-secondary" href="{% url 'videos:dashboard' %}">← Dự án</a>
+    </div>
+</div>
+
+<div class="two-col">
+    <div class="stack">
+        <section class="card card-pad" id="job-state" data-status-url="{% url 'videos:status' job_id=job.id %}">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:14px">
+                <h2 style="margin:0">Trạng thái xử lý</h2>
+                <span class="badge" id="job-badge" data-status="{{ job.status }}">{{ job.get_status_display }}</span>
+            </div>
+            <p id="job-step" class="small">{{ job.current_step|default:"Đang chờ xử lý" }}</p>
+            <div class="progress"><span id="job-progress" style="width:{{ job.progress }}%"></span></div>
+            <div class="muted small" style="margin-top:7px"><span id="progress-value">{{ job.progress }}</span>% hoàn tất</div>
+            {% if job.error_message %}
+                <div id="job-error" class="alert alert-error" style="margin-top:18px">{{ job.error_message }}</div>
+            {% else %}
+                <div id="job-error" class="alert alert-error" style="margin-top:18px" hidden></div>
+            {% endif %}
+            <div id="retry-area" style="margin-top:16px"{% if job.status != "failed" %} hidden{% endif %}>
+                <form id="retry-form" method="post" action="{% url 'videos:retry' job_id=job.id %}">
+                    {% csrf_token %}
+                    <button class="btn btn-secondary btn-small" type="submit">Thử xử lý lại</button>
+                </form>
+            </div>
+        </section>
+
+        {% if job.output_file %}
+            <section class="card card-pad">
+                <h2>Video đã xử lý</h2>
+                <video class="preview" controls src="{{ job.output_file.url }}"></video>
+                <a class="btn btn-secondary btn-small" style="margin-top:12px" href="{{ job.output_file.url }}" download>Tải video kết quả</a>
+            </section>
+        {% endif %}
+
+        <section class="card">
+            <div class="card-pad" style="padding-bottom:6px">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+                    <h2 style="margin:0">Phụ đề gần đây</h2>
+                    {% if job.status == "done" %}<a href="{% url 'videos:editor' job_id=job.id %}">Mở biên tập →</a>{% endif %}
+                </div>
+            </div>
+            {% for segment in segments %}
+                <div class="segment">
+                    <div class="segment-top">
+                        <span class="segment-number">#{{ segment.index|add:1 }}</span>
+                        <span class="muted small">{{ segment.start_sec|floatformat:1 }}s – {{ segment.end_sec|floatformat:1 }}s</span>
+                    </div>
+                    <div class="original">{{ segment.original_text }}</div>
+                    {% if segment.translated_text %}<p style="margin:0;color:var(--ink)">{{ segment.translated_text }}</p>{% else %}<p class="small" style="margin:0">Đang chờ bản dịch…</p>{% endif %}
+                </div>
+            {% empty %}
+                <div class="empty"><p>Phụ đề sẽ xuất hiện tại đây khi video được xử lý.</p></div>
+            {% endfor %}
+        </section>
+    </div>
+
+    <aside class="card card-pad">
+        <div class="eyebrow">Thông tin</div>
+        <h2 style="margin-top:8px">Tổng quan dự án</h2>
+        <div class="meta-grid" style="grid-template-columns:1fr">
+            <div class="meta"><span class="muted small">Tệp đầu vào</span><strong>{{ job.original_file.name|default:"Chưa có tệp" }}</strong></div>
+            <div class="meta"><span class="muted small">Ngôn ngữ nguồn</span><strong>{{ job.source_language }}</strong></div>
+            <div class="meta"><span class="muted small">Ngôn ngữ đích</span><strong>{{ job.target_language }}</strong></div>
+            {% if job.duration_seconds %}<div class="meta"><span class="muted small">Thời lượng</span><strong>{{ job.duration_seconds|floatformat:0 }} giây</strong></div>{% endif %}
+        </div>
+        {% if job.status == "done" %}
+            <a class="btn" style="width:100%" href="{% url 'videos:editor' job_id=job.id %}">Biên tập phụ đề</a>
+        {% endif %}
+    </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+    const state = document.getElementById("job-state");
+    const badge = document.getElementById("job-badge");
+    const progress = document.getElementById("job-progress");
+    const progressValue = document.getElementById("progress-value");
+    const step = document.getElementById("job-step");
+    const error = document.getElementById("job-error");
+    const retryArea = document.getElementById("retry-area");
+    const labels = {
+        uploaded: "Đã tải lên",
+        transcribing: "Đang nhận diện lời thoại",
+        building_context: "Đang xây dựng ngữ cảnh",
+        translating: "Đang dịch phụ đề",
+        reviewing: "Đang kiểm định bản dịch",
+        generating_audio: "Đang tạo giọng đọc",
+        rendering: "Đang ghép video",
+        done: "Hoàn thành",
+        failed: "Có lỗi"
+    };
+    let timer;
+
+    async function refreshStatus() {
+        try {
+            const response = await fetch(state.dataset.statusUrl, {headers: {"X-Requested-With": "XMLHttpRequest"}});
+            if (!response.ok) throw new Error("Không tải được trạng thái dự án.");
+            const data = await response.json();
+            badge.dataset.status = data.status;
+            badge.textContent = labels[data.status] || data.status;
+            progress.style.width = `${data.progress}%`;
+            progressValue.textContent = data.progress;
+            step.textContent = data.current_step || "Đang chờ xử lý";
+            error.textContent = data.error_message || "";
+            error.hidden = !data.error_message;
+            retryArea.hidden = data.status !== "failed";
+            if (data.status === "done" || data.status === "failed") {
+                window.clearInterval(timer);
+                window.location.reload();
+            }
+        } catch (err) {
+            step.textContent = err.message;
+        }
+    }
+
+    if (!["done", "failed"].includes(badge.dataset.status)) {
+        timer = window.setInterval(refreshStatus, 4000);
+    }
+
+    const retryForm = document.getElementById("retry-form");
+    if (retryForm) {
+        retryForm.addEventListener("submit", async event => {
+            event.preventDefault();
+            const button = retryForm.querySelector("button");
+            button.disabled = true;
+            button.textContent = "Đang gửi…";
+            try {
+                const response = await fetch(retryForm.action, {
+                    method: "POST",
+                    headers: {"X-CSRFToken": retryForm.querySelector("[name=csrfmiddlewaretoken]").value},
+                    body: new FormData(retryForm)
+                });
+                const data = await response.json();
+                if (!response.ok || !data.ok) throw new Error(data.error || "Không thể gửi yêu cầu thử lại.");
+                window.location.reload();
+            } catch (err) {
+                button.disabled = false;
+                button.textContent = "Thử xử lý lại";
+                error.textContent = err.message;
+                error.hidden = false;
+            }
+        });
+    }
+})();
+</script>
+{% endblock %}
