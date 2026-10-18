@@ -50,6 +50,8 @@ class VideoJob(models.Model):
     )
     progress = models.PositiveSmallIntegerField(default=0)  # 0-100
     current_step = models.CharField(max_length=64, blank=True)
+    # Bước pipeline bị lỗi gần nhất, dùng để retry đúng chỗ (xem tasks.py / views.retry_job)
+    failed_step = models.CharField(max_length=32, blank=True, default="")
     error_message = models.TextField(blank=True)
 
     # Chi phí & metadata
@@ -196,6 +198,9 @@ class SubtitleSegment(models.Model):
             ("fixed", "Đã sửa"),
         ],
     )
+    # True khi NGƯỜI DÙNG tự sửa bản dịch. Pipeline (dịch lại / kiểm định AI)
+    # không được ghi đè các segment này.
+    manually_edited = models.BooleanField(default=False, db_index=True)
 
     # File audio TTS của đoạn này (nếu tách riêng)
     audio_path = models.CharField(max_length=512, blank=True)
@@ -232,6 +237,9 @@ class TranslationReview(models.Model):
         on_delete=models.CASCADE,
         related_name="reviews",
     )
+    # Lần kiểm định (1, 2, 3...) của job; mỗi lần chạy lại bước reviewing tạo
+    # vòng mới thay vì xoá lịch sử cũ.
+    round = models.PositiveIntegerField(default=1, db_index=True)
     issues = models.JSONField(default=list, blank=True)  # [{"type": "...", "detail": "..."}]
     suggestion = models.TextField(blank=True)
     score = models.FloatField(null=True, blank=True)  # 0-1
