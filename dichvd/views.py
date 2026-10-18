@@ -11,7 +11,7 @@ from kombu.exceptions import OperationalError
 
 from .forms import VideoUploadForm
 from .models import VideoJob, SubtitleSegment
-from .tasks import STEP_NAMES, process_video_pipeline
+from .tasks import STEP_NAMES, fail_stale_jobs, process_video_pipeline
 
 # Các lỗi có thể xảy ra khi đưa task vào hàng đợi mà Redis/Celery không sẵn sàng
 # (OperationalError: broker; RuntimeError: result backend; ConnectionError: mạng).
@@ -27,6 +27,7 @@ def serve_media(request, path):
 
 
 def dashboard(request):
+    fail_stale_jobs()  # dọn job treo trước khi hiển thị
     jobs = VideoJob.objects.order_by("-created_at")[:50]
     return render(request, "videos/dashboard.html", {"jobs": jobs})
 
@@ -98,6 +99,7 @@ def update_segment(request, job_id, segment_id):
 @require_GET
 def job_status(request, job_id):
     """API polling trạng thái."""
+    fail_stale_jobs(job_id)  # job treo sẽ thành failed để giao diện hiện nút Retry
     job = get_object_or_404(VideoJob, id=job_id)
     return JsonResponse({
         "id": str(job.id),
@@ -119,6 +121,7 @@ def retry_job(request, job_id):
     ví dụ muốn dịch lại sau khi sửa glossary. Không cho nhảy tới bước sau bước
     lỗi vì dữ liệu của các bước trước đó chưa có.
     """
+    fail_stale_jobs(job_id)  # cho phép retry ngay cả khi job vừa bị phát hiện là treo
     job = get_object_or_404(VideoJob, id=job_id)
 
     if job.status != VideoJob.Status.FAILED:

@@ -52,6 +52,12 @@ class VideoJob(models.Model):
     current_step = models.CharField(max_length=64, blank=True)
     # Bước pipeline bị lỗi gần nhất, dùng để retry đúng chỗ (xem tasks.py / views.retry_job)
     failed_step = models.CharField(max_length=32, blank=True, default="")
+    # Khóa ở tầng task: worker nào đang giữ job và lần "còn sống" gần nhất của nó.
+    locked_by = models.CharField(max_length=128, blank=True, default="")
+    heartbeat_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    # Điểm kiểm tra của các bước chạy theo lô (translating, reviewing): lô nào đã xong.
+    # Xoá khi bước hoàn thành; chỉ còn tồn tại khi bước bị gián đoạn giữa chừng.
+    checkpoint = models.JSONField(default=dict, blank=True)
     error_message = models.TextField(blank=True)
 
     # Chi phí & metadata

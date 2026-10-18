@@ -29,10 +29,19 @@ class VideoRenderer:
         ffmpeg_bin: str = "ffmpeg",
         ffprobe_bin: str = "ffprobe",
         timeout: Optional[int] = None,
+        fit_audio: bool = True,
+        max_speedup: float = 1.3,
+        gap_ms: int = 50,
     ):
         self.ffmpeg = ffmpeg_bin
         self.ffprobe = ffprobe_bin
         self.timeout = timeout  # giây; None = không giới hạn
+        # Khớp độ dài giọng đọc với thời gian trống trong video:
+        self.fit_audio = fit_audio
+        self.max_speedup = min(max(max_speedup, 1.0), 2.0)  # atempo ổn định trong khoảng này
+        self.gap_ms = max(gap_ms, 0)  # khoảng lặng tối thiểu trước câu kế tiếp
+        # Báo cáo của lần render gần nhất: {"sped_up": int, "overflow": [index, ...]}
+        self.last_report: dict = {"sped_up": 0, "overflow": []}
 
     # ------------------------------------------------------------------
     # Public API
@@ -64,6 +73,7 @@ class VideoRenderer:
             raise RenderError(f"Không xác định được độ dài video: {video_path}")
 
         valid = self._validate_segments(segments, duration, strict)
+        self._plan_fit(valid, duration)
 
         # Video gốc không có audio thì không thể giữ audio gốc.
         if keep_original_audio and not video_info["has_audio"]:
@@ -135,8 +145,54 @@ class VideoRenderer:
                     idx, start_ms / 1000, video_duration,
                 )
                 continue
-            valid.append({**seg, "start_ms": start_ms})
+            valid.append({**seg, "start_ms": start_ms, "audio_duration": info["duration"]})
         return valid
+
+    def _plan_fit(self, valid: List[dict], video_duration: float) -> None:
+        """
+        Với mỗi đoạn TTS, tính khoảng thời gian tối đa được phép đọc: từ start_ms
+        tới lúc câu kế tiếp bắt đầu (hoặc hết video) trừ gap_ms. Nếu audio dài hơn,
+        tăng tốc bằng atempo, nhưng không quá max_speedup để giọng không bị méo.
+        Đoạn vẫn dài hơn mức cho phép được ghi vào self.last_report["overflow"].
+        Kết quả đặt vào seg["tempo"] (1.0 = giữ nguyên).
+        """
+        report = {"sped_up": 0, "overflow": []}
+        self.last_report = report
+        for seg in valid:
+            seg["tempo"] = 1.0
+        if not self.fit_audio:
+            return
+
+        ordered = sorted(valid, key=lambda s: s["start_ms"])
+        video_ms = int(video_duration * 1000)
+        for i, seg in enumerate(ordered):
+            next_start = ordered[i + 1]["start_ms"] if i + 1 < len(ordered) else video_ms
+            available_ms = next_start - seg["start_ms"] - self.gap_ms
+            audio_ms = seg["audio_duration"] * 1000
+            idx = seg.get("index")
+
+            if available_ms <= 0:
+                report["overflow"].append(idx)
+                logger.warning("Segment %s: không còn khoảng trống để đọc", idx)
+                continue
+            if audio_ms <= available_ms:
+                continue
+
+            needed = audio_ms / available_ms
+            seg["tempo"] = min(needed, self.max_speedup)
+            report["sped_up"] += 1
+            if needed > self.max_speedup + 1e-6:
+                report["overflow"].append(idx)
+                logger.warning(
+                    "Segment %s: audio %.1fs dài hơn khung %.1fs (cần x%.2f, tối đa x%.2f)"
+                    " - vẫn có thể chồng lên câu sau",
+                    idx, audio_ms / 1000, available_ms / 1000, needed, self.max_speedup,
+                )
+
+        logger.info(
+            "Khớp độ dài: tăng tốc %d đoạn, %d đoạn vẫn quá dài",
+            report["sped_up"], len(report["overflow"]),
+        )
 
     def _verify_output(self, path: str, expected_duration: float) -> None:
         p = Path(path)
@@ -231,8 +287,10 @@ class VideoRenderer:
         for i, seg in enumerate(valid):
             inputs.extend(["-i", seg["audio_path"]])
             delay_ms = seg["start_ms"]
+            tempo = seg.get("tempo", 1.0)
+            tempo_filter = f"atempo={tempo:.4f}," if tempo > 1.005 else ""
             filter_parts.append(
-                f"[{i+1}:a]adelay={delay_ms}|{delay_ms},volume=1.0[a{i}]"
+                f"[{i+1}:a]{tempo_filter}adelay={delay_ms}|{delay_ms},volume=1.0[a{i}]"
             )
             mix_inputs.append(f"[a{i}]")
 
