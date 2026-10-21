@@ -5,13 +5,29 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
+from .models import VideoJob
 from .services.context_builder import ContextBuilder
 from .services.speech_genarator import SpeechGenerator
 from .services.transcriber import Transcriber
 from .services.translator import Translator
 from .services.translation_reviewer import TranslationReviewer
+
+
+class VideoJobTests(TestCase):
+    def test_mark_done_persists_output_file(self):
+        job = VideoJob.objects.create(
+            original_file="jobs/job-1/original/source.mp4",
+            output_file="jobs/job-1/output/dubbed.mp4",
+        )
+
+        job.mark_done()
+        job.refresh_from_db()
+
+        self.assertEqual(job.status, VideoJob.Status.DONE)
+        self.assertEqual(job.progress, 100)
+        self.assertEqual(job.output_file.name, "jobs/job-1/output/dubbed.mp4")
 
 
 class TranscriberTests(SimpleTestCase):

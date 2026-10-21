@@ -21,8 +21,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import socket
 import threading
+import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -33,6 +35,11 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+# Model Gemini mặc định cho phiên âm, ngữ cảnh, dịch và kiểm định. Có thể ghi đè bằng
+# settings: TRANSCRIPTION_MODEL, GEMINI_MODEL, TRANSLATION_MODEL. Gemini 2.5 Flash đã
+# ngừng cấp cho người dùng mới nên đổi sang 3.8 Flash.
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 
 
 # ======================================================================
@@ -129,6 +136,68 @@ def _cp_clear(job, *steps: str) -> None:
         job.save(update_fields=["checkpoint", "updated_at"])
 
 
+# ----------------------------------------------------------------------
+# Tự chờ và thử lại khi Gemini báo hết quota (429 RESOURCE_EXHAUSTED)
+# ----------------------------------------------------------------------
+def _quota_info(exc: BaseException):
+    """
+    Nếu exc (hoặc nguyên nhân của nó) là lỗi 429 của Gemini, trả về
+    (số giây nên chờ, có phải quota theo ngày không). Ngược lại trả về None.
+    """
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        text = str(exc)
+        if "429" in text or "RESOURCE_EXHAUSTED" in text:
+            daily = "PerDay" in text
+            match = (
+                re.search(r"retry in ([\d.]+)\s*s", text, re.I)
+                or re.search(r"retryDelay['\"]?\s*:\s*['\"]?([\d.]+)s", text)
+            )
+            wait = float(match.group(1)) + 2 if match else 60.0
+            return min(wait, 300.0), daily
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def _call_with_quota_retry(func, *args, **kwargs):
+    """
+    Gọi func; nếu Gemini báo vượt hạn mức theo phút thì chờ đúng thời gian nó yêu cầu
+    rồi thử lại (tối đa settings.GEMINI_QUOTA_MAX_RETRIES lần). Hết quota theo ngày thì
+    báo lỗi rõ ràng vì chờ cũng không giúp được. Heartbeat vẫn chạy nên job không bị coi là treo.
+    """
+    max_retries = int(getattr(settings, "GEMINI_QUOTA_MAX_RETRIES", 8))
+    for attempt in range(max_retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            info = _quota_info(exc)
+            if info is None:
+                raise
+            wait, daily = info
+            if daily:
+                raise RuntimeError(
+                    "Đã hết hạn mức Gemini theo NGÀY. Hãy bật thanh toán cho project "
+                    "trong Google AI Studio, đổi API key/model, hoặc thử lại vào ngày mai."
+                ) from exc
+            if attempt >= max_retries:
+                raise
+            logger.warning(
+                "Gemini báo vượt hạn mức theo phút, chờ %.0fs rồi thử lại (lần %d/%d)",
+                wait, attempt + 1, max_retries,
+            )
+            time.sleep(wait)
+
+
+def _review_enabled() -> bool:
+    """
+    settings.REVIEW_ENABLED; chấp nhận cả chuỗi từ biến môi trường ('false', '0', 'no', 'off')
+    để os.getenv('REVIEW_ENABLED', ...) không bị coi là True vì chuỗi không rỗng.
+    """
+    value = getattr(settings, "REVIEW_ENABLED", True)
+    return str(value).strip().lower() not in ("false", "0", "no", "off", "")
+
+
 # ======================================================================
 # CÁC BƯỚC ĐỘC LẬP
 # ======================================================================
@@ -149,10 +218,12 @@ def step_transcribe(job, work: Path) -> None:
         model_size=getattr(settings, "WHISPER_MODEL_SIZE", "medium"),
         device=getattr(settings, "WHISPER_DEVICE", "cpu"),
         provider=getattr(settings, "TRANSCRIPTION_PROVIDER", "gemini"),
-        api_model=getattr(settings, "TRANSCRIPTION_MODEL", "gemini-2.5-flash"),
+        api_model=getattr(settings, "TRANSCRIPTION_MODEL", DEFAULT_GEMINI_MODEL),
     )
     lang = None if job.source_language == "auto" else job.source_language
-    raw_segments = transcriber.transcribe_to_dicts(audio_path, language=lang)
+    raw_segments = _call_with_quota_retry(
+        transcriber.transcribe_to_dicts, audio_path, language=lang
+    )
     if not raw_segments:
         raise RuntimeError("Không nhận diện được lời thoại nào trong video.")
 
@@ -184,8 +255,9 @@ def step_build_context(job, work: Path) -> None:
     if not SubtitleSegment.objects.filter(job=job).exists():
         raise RuntimeError("Chưa có segment. Hãy chạy lại từ bước transcribing.")
 
-    builder = ContextBuilder(model=getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash"))
-    context = builder.build(
+    builder = ContextBuilder(model=getattr(settings, "GEMINI_MODEL", DEFAULT_GEMINI_MODEL))
+    context = _call_with_quota_retry(
+        builder.build,
         segments=_load_segments_for_service(job),
         title=job.title or "",
     )
@@ -229,7 +301,7 @@ def step_translate(job, work: Path) -> None:
 
     _set_step(job, "translating", VideoJob.Status.TRANSLATING, 40)
 
-    model = getattr(settings, "TRANSLATION_MODEL", "gemini-2.5-flash")
+    model = getattr(settings, "TRANSLATION_MODEL", DEFAULT_GEMINI_MODEL)
     batch_size = max(1, int(getattr(settings, "TRANSLATE_BATCH_SIZE", 20)))
     segments = _load_segments_for_service(job)
     context = _load_context(job)
@@ -252,7 +324,8 @@ def step_translate(job, work: Path) -> None:
         if not pending:
             continue
 
-        translated = translator.translate(
+        translated = _call_with_quota_retry(
+            translator.translate,
             segments=pending,
             context=context,
             target_language=job.target_language,
@@ -341,11 +414,18 @@ def step_review(job, work: Path) -> None:
 
     _set_step(job, "reviewing", VideoJob.Status.REVIEWING, 60)
 
-    model_name = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
-    batch_size = max(
-        1,
-        int(getattr(settings, "REVIEW_BATCH_SIZE", getattr(settings, "TRANSLATE_BATCH_SIZE", 20))),
-    )
+    # Cho phép bỏ qua kiểm định AI (settings.REVIEW_ENABLED = False), ví dụ khi dùng gói
+    # miễn phí hạn mức thấp. Bản dịch vẫn được dùng nguyên như bước dịch tạo ra.
+    if not _review_enabled():
+        logger.info("Job %s: REVIEW_ENABLED=False, bỏ qua bước kiểm định", job.id)
+        _cp_clear(job, "reviewing")
+        _set_progress(job, 70)
+        return
+
+    model_name = getattr(settings, "GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+    # Reviewer gọi Gemini một lần cho mỗi câu, nên lô nhỏ (mặc định 4) để không vượt
+    # 5 yêu cầu/phút của gói miễn phí và mỗi lô hoàn thành kịp được lưu checkpoint.
+    batch_size = max(1, int(getattr(settings, "REVIEW_BATCH_SIZE", 4)))
     context = _load_context(job)
     # Câu người dùng đã sửa tay coi như đã được con người duyệt: không gửi đi kiểm định.
     segs_for_review = list(
@@ -384,7 +464,8 @@ def step_review(job, work: Path) -> None:
         pending = [s for s in batch if s["index"] not in done]
         if not pending:
             continue
-        reviews = reviewer.review_segments(
+        reviews = _call_with_quota_retry(
+            reviewer.review_segments,
             pending,
             context=context,
             only_suspicious=True,
@@ -668,6 +749,12 @@ def _run_steps_locked(
 
     for name, func in steps:
         heartbeat.raise_if_lost()
+        # Tắt kiểm định: bỏ hẳn bước, không đổi trạng thái sang "reviewing" và không gọi Gemini.
+        if name == "reviewing" and not _review_enabled():
+            logger.info("Job %s: REVIEW_ENABLED tắt, bỏ qua hẳn bước kiểm định", job_id)
+            _cp_clear(job, "reviewing")
+            _set_progress(job, 70)
+            continue
         try:
             logger.info("Job %s: bắt đầu bước %s", job_id, name)
             func(job, work)

@@ -143,13 +143,13 @@ CELERY_TASK_PUBLISH_RETRY_POLICY = {
 }
 
 TRANSCRIPTION_PROVIDER = os.getenv('TRANSCRIPTION_PROVIDER', 'gemini')
-TRANSCRIPTION_MODEL = os.getenv('TRANSCRIPTION_MODEL', 'gemini-2.5-flash')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
-TRANSLATION_MODEL = os.getenv('TRANSLATION_MODEL', 'gemini-2.5-flash')
-TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'gemini')
+TRANSCRIPTION_MODEL = os.getenv('TRANSCRIPTION_MODEL', 'gemini-3.8-flash')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.8-flash')
+TRANSLATION_MODEL = os.getenv('TRANSLATION_MODEL', 'gemini-3.8-flash')
+TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'edge')  # 'edge' (edge-tts, không dùng Gemini) hoặc 'gemini'
 TTS_MODEL = os.getenv('TTS_MODEL', 'gemini-3.8-flash-tts')
-TTS_VOICE = os.getenv('TTS_VOICE', 'Kore')
-
+TTS_VOICE = os.getenv('TTS_VOICE', 'vi-VN-HoaiMyNeural')  # nam: vi-VN-NamMinhNeural (Gemini dùng tên như 'Kore')
+REVIEW_ENABLED = False
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration

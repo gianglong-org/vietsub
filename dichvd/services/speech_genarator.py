@@ -14,6 +14,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -23,6 +25,23 @@ logger = logging.getLogger(__name__)
 
 # Tăng số này khi đổi cách sinh audio (ví dụ đổi định dạng) để vô hiệu cache cũ.
 CACHE_VERSION = 1
+
+# Số lần gọi edge-tts tối đa cho mỗi câu (dịch vụ đôi khi trả "No audio was received").
+EDGE_MAX_ATTEMPTS = 3
+
+# Ký tự điều khiển và ký tự độ rộng bằng 0 làm edge-tts không đọc được.
+_JUNK_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f​-‏‪-‮⁠﻿]")
+
+
+def clean_tts_text(text: str) -> str:
+    """Bỏ ký tự rác và gom khoảng trắng trước khi đưa cho dịch vụ đọc."""
+    text = _JUNK_CHARS.sub("", text or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def is_speakable(text: str) -> bool:
+    """Có ít nhất một chữ hoặc chữ số để đọc (chỉ có dấu câu, ký hiệu, emoji thì không)."""
+    return bool(re.search(r"[^\W_]", text, re.UNICODE))
 
 
 class SpeechGenerator:
@@ -145,8 +164,14 @@ class SpeechGenerator:
         reused = generated = 0
 
         for seg in segments:
-            text = (seg.get("translated_text") or "").strip()
+            text = clean_tts_text(seg.get("translated_text") or "")
             if not text:
+                results.append({**seg, "audio_path": ""})
+                continue
+            if not is_speakable(text):
+                # Ví dụ "...", "♪", chỉ có emoji: dịch vụ TTS không trả audio, bỏ qua câu này.
+                logger.warning("Segment %s không có nội dung đọc được (%r), bỏ qua",
+                               seg.get("index"), text[:40])
                 results.append({**seg, "audio_path": ""})
                 continue
 
@@ -161,9 +186,12 @@ class SpeechGenerator:
             try:
                 self._synthesize(text, audio_path)
                 self._write_meta(audio_path, fingerprint)
-            except Exception:
+            except Exception as e:
                 logger.exception("TTS lỗi segment %s", seg.get("index"))
-                raise
+                # Báo rõ câu nào lỗi để người dùng sửa được ngay trong trình chỉnh sửa.
+                raise RuntimeError(
+                    f"TTS lỗi ở segment {seg.get('index')} ({text[:60]!r}): {e}"
+                ) from e
             generated += 1
             results.append({**seg, "audio_path": audio_path})
 
@@ -182,7 +210,22 @@ class SpeechGenerator:
             communicate = edge_tts.Communicate(text, voice)
             await communicate.save(output_path)
 
-        asyncio.run(_run())
+        last_error: Exception | None = None
+        for attempt in range(1, EDGE_MAX_ATTEMPTS + 1):
+            try:
+                asyncio.run(_run())
+                return
+            except (ValueError, ImportError):
+                raise  # sai tên giọng/tham số: thử lại cũng vô ích
+            except Exception as e:  # NoAudioReceived, lỗi mạng, ...
+                last_error = e
+                logger.warning("edge-tts lần %d/%d lỗi: %s", attempt, EDGE_MAX_ATTEMPTS, e)
+                if attempt < EDGE_MAX_ATTEMPTS:
+                    time.sleep(attempt)  # chờ 1s, 2s rồi thử lại
+        raise RuntimeError(
+            f"edge-tts không trả về audio sau {EDGE_MAX_ATTEMPTS} lần thử "
+            f"(giọng '{voice}'): {last_error}"
+        ) from last_error
 
     def _gemini_tts(self, text: str, output_path: str):
         if self.llm is None:

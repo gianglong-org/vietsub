@@ -86,7 +86,15 @@ class VideoJob(models.Model):
         self.status = self.Status.DONE
         self.progress = 100
         self.completed_at = timezone.now()
-        self.save(update_fields=["status", "progress", "completed_at", "updated_at"])
+        self.save(
+            update_fields=[
+                "status",
+                "progress",
+                "output_file",
+                "completed_at",
+                "updated_at",
+            ]
+        )
 
 
 class Character(models.Model):
